@@ -97,6 +97,7 @@ datafusion-functions-nested = { version = "53.1.0" }
 [features]
 backtrace = ["datafusion/backtrace"]
 default = ["hdfs-opendal"]
+contrib-lance = []
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]

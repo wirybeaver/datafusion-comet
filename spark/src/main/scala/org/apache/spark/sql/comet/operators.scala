@@ -86,6 +86,7 @@ private[comet] object PlanDataInjector {
   // Registry of injectors for different operator types
   private val injectors: Seq[PlanDataInjector] = Seq(
     IcebergPlanDataInjector,
+    LancePlanDataInjector,
     NativeScanPlanDataInjector
     // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
   )
@@ -232,6 +233,34 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
     scanBuilder.setFilePartition(partitionOnly.getFilePartition)
 
     op.toBuilder.setNativeScan(scanBuilder).build()
+  }
+}
+
+/**
+ * Injector for LanceScan operators.
+ */
+private[comet] object LancePlanDataInjector extends PlanDataInjector {
+
+  override def canInject(op: Operator): Boolean =
+    op.hasLanceScan &&
+      op.getLanceScan.hasCommon &&
+      !op.getLanceScan.hasPartition
+
+  override def getKey(op: Operator): Option[String] =
+    Some(op.getLanceScan.getCommon.getScanId)
+
+  override def inject(
+      op: Operator,
+      commonBytes: Array[Byte],
+      partitionBytes: Array[Byte]): Operator = {
+    val common = OperatorOuterClass.LanceScanCommon.parseFrom(commonBytes)
+    val partitionOnly = OperatorOuterClass.LanceScan.parseFrom(partitionBytes)
+
+    val scanBuilder = OperatorOuterClass.LanceScan.newBuilder()
+    scanBuilder.setCommon(common)
+    scanBuilder.setPartition(partitionOnly.getPartition)
+
+    op.toBuilder.setLanceScan(scanBuilder).build()
   }
 }
 
@@ -685,6 +714,7 @@ abstract class CometNativeExec extends CometExec {
    *   - CometScanExec - Comet scan node
    *   - CometBatchScanExec - Comet scan node
    *   - CometIcebergNativeScanExec - Native Iceberg scan node
+   *   - CometLanceNativeScanLike - Native Lance scan node
    *   - ShuffleQueryStageExec - AQE shuffle stage node on top of Comet shuffle
    *   - AQEShuffleReadExec - AQE shuffle read node on top of Comet shuffle
    *   - CometShuffleExchangeExec - Comet shuffle exchange node
@@ -699,11 +729,11 @@ abstract class CometNativeExec extends CometExec {
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
       case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
-          _: CometIcebergNativeScanExec | _: CometCsvNativeScanExec | _: ShuffleQueryStageExec |
-          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
-          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
-          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
-          _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
+          _: CometIcebergNativeScanExec | _: CometLanceNativeScanLike |
+          _: CometCsvNativeScanExec | _: ShuffleQueryStageExec | _: AQEShuffleReadExec |
+          _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
+          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
+          _: BroadcastQueryStageExec | _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
@@ -771,6 +801,10 @@ abstract class CometNativeExec extends CometExec {
         (
           Map(nativeScan.sourceKey -> nativeScan.commonData),
           Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
+
+      case lance: CometLanceNativeScanLike =>
+        lance.ensureSubqueriesResolved()
+        (Map(lance.sourceKey -> lance.commonData), Map(lance.sourceKey -> lance.perPartitionData))
 
       // Broadcast stages are boundaries - don't collect per-partition data from inside them.
       // After DPP filtering, broadcast scans may have different partition counts than the
